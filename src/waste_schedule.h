@@ -1,10 +1,9 @@
 // Datenmodell fuer die Abfuhrtermine.
 //
-// Bewusst getrennt von der UI: neue/fehlende Terminlisten (Gelbe Tonne, Blaue
-// Tonne, Bioabfall-Winterturnus) koennen hier nachgetragen werden, ohne dass
-// display_ui.cpp angefasst werden muss. Spaeter (V2) kann getNextPickup()
-// intern auf einen HTTP/JSON-Abruf umgestellt werden, ohne dass sich die
-// Schnittstelle nach aussen aendert.
+// Bewusst getrennt von der UI: neue Terminlisten (z.B. fuer 2027) koennen
+// hier nachgetragen werden, ohne dass display_ui.cpp angefasst werden muss.
+// Spaeter (V2) kann getNextPickup() intern auf einen HTTP/JSON-Abruf
+// umgestellt werden, ohne dass sich die Schnittstelle nach aussen aendert.
 #pragma once
 #include <Arduino.h>
 #include <time.h>
