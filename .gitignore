@@ -1,0 +1,14 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Geheimnisse (WLAN-Zugangsdaten) - NIEMALS committen
+include/secrets.h
+
+# Editor / OS
+.vscode/
+.DS_Store
+*.swp
