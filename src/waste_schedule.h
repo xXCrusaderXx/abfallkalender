@@ -1,9 +1,12 @@
 // Datenmodell fuer die Abfuhrtermine.
 //
-// Bewusst getrennt von der UI: neue Terminlisten (z.B. fuer 2027) koennen
-// hier nachgetragen werden, ohne dass display_ui.cpp angefasst werden muss.
-// Spaeter (V2) kann getNextPickup() intern auf einen HTTP/JSON-Abruf
-// umgestellt werden, ohne dass sich die Schnittstelle nach aussen aendert.
+// Die Termine kommen NICHT mehr aus fest im Code hinterlegten Listen, sondern
+// aus data/schedule.json in diesem Repo (per HTTPS-GET), das wiederum von
+// einem taeglichen GitHub-Actions-Workflow (.github/workflows/update-schedule.yml)
+// automatisch aus derselben Datenquelle wie die offizielle "Abfall LK BZ"-App
+// (app.abfallplus.de) aktualisiert wird - siehe scripts/fetch_schedule.py.
+// Ein erfolgreicher Abruf wird als Rohtext in LittleFS gecacht, damit das
+// Geraet auch ohne WLAN sofort die zuletzt bekannten Termine anzeigen kann.
 #pragma once
 #include <Arduino.h>
 #include <time.h>
@@ -27,9 +30,9 @@ struct PickupDate {
 // Menschlicher Anzeigename der Tonnenart, fuer Kachel-Titel.
 const char *binTypeName(BinType type);
 
-// Ob fuer diese Tonnenart aktuell vollstaendige Termindaten hinterlegt sind.
-// false bedeutet: Termine sind noch offen (siehe TODOs in waste_schedule.cpp) -
-// die UI zeigt dann einen Platzhalter statt eines Datums an.
+// Ob fuer diese Tonnenart aktuell Termindaten geladen sind (aus Cache oder
+// Netzwerk). false heisst: weder Cache noch Netzwerk-Fetch waren bisher
+// erfolgreich - die UI zeigt dann einen Platzhalter statt eines Datums an.
 bool binTypeHasData(BinType type);
 
 // Liefert den naechsten Abholtermin (heute oder spaeter) fuer die angegebene
@@ -44,3 +47,15 @@ int daysUntil(time_t now, const PickupDate &date);
 
 // Wandelt ein PickupDate in Mitternacht (00:00 Uhr lokaler Zeit) als time_t um.
 time_t pickupDateToMidnight(const PickupDate &date);
+
+// Einmalig in setup() aufrufen: mountet LittleFS, laedt eine evtl. vorhandene
+// gecachte schedule.json und stoesst danach einen ersten Netzwerk-Refresh an
+// (best effort - schlaegt der Fetch fehl, bleiben die gecachten/leeren Daten
+// bestehen). Blockiert kurzzeitig waehrend des HTTPS-Requests.
+void scheduleBegin();
+
+// Regelmaessig aus der Arduino loop() aufrufen. Stoesst alle
+// SCHEDULE_FETCH_INTERVAL_MS einen erneuten HTTPS-Fetch an (siehe config.h).
+// Schlaegt ein Fetch fehl (kein WLAN, Server nicht erreichbar, ungueltiges
+// JSON), bleiben die zuletzt bekannten Termine unveraendert erhalten.
+void scheduleLoop();

@@ -1,91 +1,145 @@
 #include "waste_schedule.h"
+#include "config.h"
+
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <LittleFS.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <vector>
 
 namespace {
 
-// Alle Termine in diesem Abschnitt stammen aus dem offiziellen Abfallkalender
-// 2026 des Landkreises Bautzen (Tabelle "Arnsdorf - Bautzen 3", Seite 10):
-// https://www.landkreis-bautzen.de/download/Abfallamt/Abfallkalender_2026.pdf
-// Enthaelt bereits alle feiertagsbedingten Verschiebungen.
+const char *kCacheFile = "/schedule.json";
 
-// --- Restabfall (Donnerstag) -------------------------------------------------
-const PickupDate kRestmuell2026[] = {
-    {2026, 1, 2},   {2026, 1, 15},  {2026, 1, 29},  {2026, 2, 12},
-    {2026, 2, 26},  {2026, 3, 12},  {2026, 3, 26},  {2026, 4, 10},
-    {2026, 4, 23},  {2026, 5, 7},   {2026, 5, 21},  {2026, 6, 4},
-    {2026, 6, 18},  {2026, 7, 2},   {2026, 7, 16},  {2026, 7, 30},
-    {2026, 8, 13},  {2026, 8, 27},  {2026, 9, 10},  {2026, 9, 24},
-    {2026, 10, 8},  {2026, 10, 22}, {2026, 11, 5},  {2026, 11, 19},
-    {2026, 12, 3},  {2026, 12, 17},
+// Ein Eintrag pro Tonnenart, aufsteigend sortiert (garantiert durch
+// scripts/fetch_schedule.py) - getNextPickup() verlaesst sich darauf.
+std::vector<PickupDate> g_schedule[(size_t)BinType::COUNT];
+
+unsigned long g_lastFetchAttemptMs = 0;
+bool g_littleFsMounted = false;
+
+struct BinKey {
+    const char *jsonKey; // muss zu scripts/fetch_schedule.py (CATEGORY_MAP) passen
+    BinType type;
 };
-const size_t kRestmuellCount = sizeof(kRestmuell2026) / sizeof(kRestmuell2026[0]);
 
-// --- Bioabfall: Wintertermine (ausserhalb der Sommersaison) -----------------
-// Lt. Kalender 14-taegig mit unregelmaessigen Abstaenden (Tourenplanung),
-// daher als explizite Liste statt als Regel gefuehrt.
-const PickupDate kBioWinter2026[] = {
-    {2026, 1, 7},   {2026, 1, 21},  {2026, 2, 4},   {2026, 2, 18},
-    {2026, 3, 4},   {2026, 3, 18},  {2026, 4, 1},   {2026, 4, 15},
-    {2026, 4, 29},  {2026, 11, 11}, {2026, 11, 25}, {2026, 12, 9},
-    {2026, 12, 23},
+const BinKey kBinKeys[] = {
+    {"restmuell", BinType::Restmuell},
+    {"bioabfall", BinType::Bioabfall},
+    {"gelbe_tonne", BinType::GelbeTonne},
+    {"blaue_tonne", BinType::BlaueTonne},
 };
-const size_t kBioWinterCount = sizeof(kBioWinter2026) / sizeof(kBioWinter2026[0]);
 
-// --- Bioabfall: Sommersaison, woechentlich mittwochs ------------------------
-// HINWEIS: Die vom Landkreis genannten Eckdaten 04.05.2026 und 30.10.2026
-// sind selbst KEIN Mittwoch (04.05. ist ein Montag, 30.10. ein Freitag).
-// Sie werden hier daher als Saison-*Zeitraum* interpretiert: der erste
-// Abholtermin ist der erste Mittwoch ab Saisonstart (06.05.2026), der letzte
-// der letzte Mittwoch vor/an Saisonende (28.10.2026) - passend zur Kalender-
-// Angabe "vom 04.05. bis 30.10.2026 woechentliche Bioentsorgung: Mittwoch".
-const PickupDate kBioSaisonStart = {2026, 5, 4};
-const PickupDate kBioSaisonEnde = {2026, 10, 30};
-const int kBioWochentag = 3; // struct tm::tm_wday: 0=Sonntag ... 3=Mittwoch
-
-// --- Gelbe Tonne (Verpackungen) ----------------------------------------------
-const PickupDate kGelbeTonne2026[] = {
-    {2026, 1, 5},   {2026, 1, 19},  {2026, 2, 2},   {2026, 2, 16},
-    {2026, 3, 2},   {2026, 3, 16},  {2026, 3, 30},  {2026, 4, 15},
-    {2026, 4, 29},  {2026, 5, 15},  {2026, 6, 1},   {2026, 6, 15},
-    {2026, 6, 29},  {2026, 7, 13},  {2026, 7, 27},  {2026, 8, 10},
-    {2026, 8, 24},  {2026, 9, 7},   {2026, 9, 21},  {2026, 10, 5},
-    {2026, 10, 19}, {2026, 11, 2},  {2026, 11, 16}, {2026, 12, 1},
-    {2026, 12, 15}, {2026, 12, 30},
-};
-const size_t kGelbeTonneCount = sizeof(kGelbeTonne2026) / sizeof(kGelbeTonne2026[0]);
-
-// --- Blaue Tonne (Papier) -----------------------------------------------------
-// Fast monatlich; 21.11. ist im Original fett gedruckt = feiertagsbedingt
-// verschoben (siehe Legende im Kalender-PDF).
-const PickupDate kBlaueTonne2026[] = {
-    {2026, 1, 16},  {2026, 2, 13},  {2026, 3, 13},  {2026, 4, 11},
-    {2026, 5, 8},   {2026, 6, 5},   {2026, 7, 3},   {2026, 7, 31},
-    {2026, 8, 28},  {2026, 9, 25},  {2026, 10, 23}, {2026, 11, 21},
-    {2026, 12, 18},
-};
-const size_t kBlaueTonneCount = sizeof(kBlaueTonne2026) / sizeof(kBlaueTonne2026[0]);
-
-// --- Zeit-Hilfsfunktionen ----------------------------------------------------
-
-struct tm toTm(const PickupDate &date) {
-    struct tm t = {};
-    t.tm_year = date.year - 1900;
-    t.tm_mon = date.month - 1;
-    t.tm_mday = date.day;
-    t.tm_isdst = -1; // DST von der C-Library ermitteln lassen
-    return t;
+bool parsePickupDate(const char *iso, PickupDate &out) {
+    if (!iso) return false;
+    unsigned int year, month, day;
+    if (sscanf(iso, "%4u-%2u-%2u", &year, &month, &day) != 3) return false;
+    out.year = (uint16_t)year;
+    out.month = (uint8_t)month;
+    out.day = (uint8_t)day;
+    return true;
 }
 
-PickupDate fromTime(time_t t) {
-    struct tm out;
-    localtime_r(&t, &out);
-    PickupDate d;
-    d.year = out.tm_year + 1900;
-    d.month = out.tm_mon + 1;
-    d.day = out.tm_mday;
-    return d;
+// Parst schedule.json (Format siehe scripts/fetch_schedule.py) und ersetzt
+// g_schedule nur bei vollstaendigem Erfolg - bei ungueltigem JSON oder
+// fehlendem "bins"-Feld bleiben die zuletzt bekannten Termine unangetastet.
+bool parseScheduleJson(const String &json) {
+    DynamicJsonDocument doc(16384);
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) {
+        Serial.printf("schedule.json: JSON-Fehler: %s\n", err.c_str());
+        return false;
+    }
+    JsonObject bins = doc["bins"];
+    if (bins.isNull()) {
+        Serial.println("schedule.json: Feld 'bins' fehlt.");
+        return false;
+    }
+
+    std::vector<PickupDate> parsed[(size_t)BinType::COUNT];
+    for (const BinKey &key : kBinKeys) {
+        JsonArray dates = bins[key.jsonKey];
+        if (dates.isNull()) continue; // Bin fehlt im JSON - bleibt leer, UI zeigt Platzhalter
+        for (JsonVariant v : dates) {
+            PickupDate date;
+            if (parsePickupDate(v.as<const char *>(), date)) {
+                parsed[(size_t)key.type].push_back(date);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < (size_t)BinType::COUNT; ++i) {
+        g_schedule[i] = std::move(parsed[i]);
+    }
+    return true;
 }
 
-// Rundet einen Zeitpunkt auf Mitternacht (lokale Zeit) desselben Tages ab.
+void ensureLittleFs() {
+    if (g_littleFsMounted) return;
+    // true = bei korruptem Dateisystem automatisch formatieren. Unkritisch,
+    // da hier nur ein Cache liegt - ein Netzwerk-Refresh heilt das wieder.
+    g_littleFsMounted = LittleFS.begin(true);
+    if (!g_littleFsMounted) {
+        Serial.println("LittleFS konnte nicht gemountet werden - Termin-Cache deaktiviert.");
+    }
+}
+
+void loadCache() {
+    ensureLittleFs();
+    if (!g_littleFsMounted) return;
+    File f = LittleFS.open(kCacheFile, "r");
+    if (!f) return; // noch kein Cache vorhanden (erster Boot)
+    String content = f.readString();
+    f.close();
+    if (parseScheduleJson(content)) {
+        Serial.println("Abfuhrtermine aus Cache geladen.");
+    }
+}
+
+void saveCache(const String &json) {
+    ensureLittleFs();
+    if (!g_littleFsMounted) return;
+    File f = LittleFS.open(kCacheFile, "w");
+    if (!f) {
+        Serial.println("Termin-Cache konnte nicht geschrieben werden.");
+        return;
+    }
+    f.print(json);
+    f.close();
+}
+
+bool fetchFromNetwork() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    WiFiClientSecure client;
+    // Kein Zertifikats-Pinning: schedule.json ist eine oeffentliche, nicht
+    // sicherheitsrelevante Datei (nur Abfuhrtermine) - der Wartungsaufwand
+    // fuer Pinning/Root-CA-Rotation steht in keinem Verhaeltnis zum Risiko.
+    client.setInsecure();
+
+    HTTPClient http;
+    if (!http.begin(client, SCHEDULE_JSON_URL)) {
+        Serial.println("Schedule-Fetch: HTTPClient::begin() fehlgeschlagen.");
+        return false;
+    }
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("Schedule-Fetch fehlgeschlagen, HTTP %d\n", code);
+        http.end();
+        return false;
+    }
+    String payload = http.getString();
+    http.end();
+
+    if (!parseScheduleJson(payload)) {
+        return false;
+    }
+    saveCache(payload);
+    Serial.println("Abfuhrtermine per HTTPS aktualisiert.");
+    return true;
+}
+
 time_t toMidnight(time_t t) {
     struct tm tmv;
     localtime_r(&t, &tmv);
@@ -94,72 +148,6 @@ time_t toMidnight(time_t t) {
     tmv.tm_sec = 0;
     tmv.tm_isdst = -1;
     return mktime(&tmv);
-}
-
-// Naechster Tag mit gegebenem Wochentag auf/nach "from" (inklusive "from").
-time_t nextWeekday(time_t from, int targetWday) {
-    struct tm t;
-    localtime_r(&from, &t);
-    int diff = (targetWday - t.tm_wday + 7) % 7;
-    t.tm_mday += diff;
-    t.tm_isdst = -1;
-    return mktime(&t);
-}
-
-// Liefert den ersten Termin >= nowMidnight aus einer aufsteigend sortierten
-// Terminliste. Gemeinsame Suchlogik fuer Restmuell/Gelbe Tonne/Blaue Tonne.
-bool nextFromList(const PickupDate *list, size_t count, time_t nowMidnight, PickupDate &out) {
-    for (size_t i = 0; i < count; ++i) {
-        time_t candidate = pickupDateToMidnight(list[i]);
-        if (candidate >= nowMidnight) {
-            out = list[i];
-            return true;
-        }
-    }
-    return false; // Terminliste 2026 erschoepft - fuer Folgejahr nachpflegen
-}
-
-bool nextBioSommer(time_t nowMidnight, PickupDate &out) {
-    time_t saisonStart = pickupDateToMidnight(kBioSaisonStart);
-    time_t saisonEnde = pickupDateToMidnight(kBioSaisonEnde);
-
-    time_t searchFrom = nowMidnight > saisonStart ? nowMidnight : saisonStart;
-    time_t candidate = nextWeekday(searchFrom, kBioWochentag);
-
-    if (candidate < saisonStart) {
-        candidate = nextWeekday(saisonStart, kBioWochentag);
-    }
-    if (candidate > saisonEnde) {
-        return false; // ausserhalb der Sommersaison
-    }
-    out = fromTime(candidate);
-    return true;
-}
-
-// Bioabfall kombiniert die feste Wintertermin-Liste mit der Sommersaison-Regel
-// und liefert von beiden den zeitlich naeheren Termin.
-bool nextBioabfall(time_t nowMidnight, PickupDate &out) {
-    PickupDate winterCandidate;
-    bool hasWinter = nextFromList(kBioWinter2026, kBioWinterCount, nowMidnight, winterCandidate);
-
-    PickupDate sommerCandidate;
-    bool hasSommer = nextBioSommer(nowMidnight, sommerCandidate);
-
-    if (hasWinter && hasSommer) {
-        time_t w = pickupDateToMidnight(winterCandidate);
-        time_t s = pickupDateToMidnight(sommerCandidate);
-        out = (w <= s) ? winterCandidate : sommerCandidate;
-        return true;
-    }
-    if (hasWinter) {
-        out = winterCandidate;
-        return true;
-    }
-    if (hasSommer) {
-        out = sommerCandidate;
-        return true;
-    }
-    return false; // beide Terminlisten erschoepft - fuer Folgejahr nachpflegen
 }
 
 } // namespace
@@ -175,36 +163,29 @@ const char *binTypeName(BinType type) {
 }
 
 bool binTypeHasData(BinType type) {
-    switch (type) {
-        case BinType::Restmuell:
-        case BinType::Bioabfall:
-        case BinType::GelbeTonne:
-        case BinType::BlaueTonne:
-            return true;
-        default:
-            return false;
-    }
+    if (type >= BinType::COUNT) return false;
+    return !g_schedule[(size_t)type].empty();
 }
 
 time_t pickupDateToMidnight(const PickupDate &date) {
-    struct tm t = toTm(date);
+    struct tm t = {};
+    t.tm_year = date.year - 1900;
+    t.tm_mon = date.month - 1;
+    t.tm_mday = date.day;
+    t.tm_isdst = -1; // DST von der C-Library ermitteln lassen
     return mktime(&t);
 }
 
 bool getNextPickup(BinType type, time_t now, PickupDate &outDate) {
+    if (type >= BinType::COUNT) return false;
     time_t nowMidnight = toMidnight(now);
-    switch (type) {
-        case BinType::Restmuell:
-            return nextFromList(kRestmuell2026, kRestmuellCount, nowMidnight, outDate);
-        case BinType::Bioabfall:
-            return nextBioabfall(nowMidnight, outDate);
-        case BinType::GelbeTonne:
-            return nextFromList(kGelbeTonne2026, kGelbeTonneCount, nowMidnight, outDate);
-        case BinType::BlaueTonne:
-            return nextFromList(kBlaueTonne2026, kBlaueTonneCount, nowMidnight, outDate);
-        default:
-            return false;
+    for (const PickupDate &candidate : g_schedule[(size_t)type]) {
+        if (pickupDateToMidnight(candidate) >= nowMidnight) {
+            outDate = candidate;
+            return true;
+        }
     }
+    return false; // Terminliste erschoepft oder (noch) keine Daten geladen
 }
 
 int daysUntil(time_t now, const PickupDate &date) {
@@ -212,4 +193,17 @@ int daysUntil(time_t now, const PickupDate &date) {
     time_t dateMidnight = pickupDateToMidnight(date);
     double diffSeconds = difftime(dateMidnight, nowMidnight);
     return (int)(diffSeconds / 86400.0 + 0.5);
+}
+
+void scheduleBegin() {
+    loadCache();
+    fetchFromNetwork(); // best effort - Cache/leere Daten bleiben bei Fehlschlag erhalten
+    g_lastFetchAttemptMs = millis();
+}
+
+void scheduleLoop() {
+    unsigned long nowMs = millis();
+    if (nowMs - g_lastFetchAttemptMs < SCHEDULE_FETCH_INTERVAL_MS) return;
+    g_lastFetchAttemptMs = nowMs;
+    fetchFromNetwork();
 }

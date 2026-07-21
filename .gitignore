@@ -12,3 +12,7 @@ include/secrets.h
 .vscode/
 .DS_Store
 *.swp
+
+# Python (scripts/)
+__pycache__/
+*.pyc

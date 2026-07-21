@@ -11,6 +11,17 @@
 // Wie oft nach einer fehlgeschlagenen NTP-Sync erneut versucht wird (ms)
 #define NTP_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL) // 5 Minuten
 
+// --- Abfuhrtermine (schedule.json) ---
+// Wird von .github/workflows/update-schedule.yml taeglich aus den echten
+// Daten der "Abfall LK BZ"-App (app.abfallplus.de) generiert und hier per
+// HTTPS abgerufen, siehe src/waste_schedule.cpp.
+#define SCHEDULE_JSON_URL "https://raw.githubusercontent.com/xXCrusaderXx/abfallkalender/master/data/schedule.json"
+
+// Wie oft (ms) versucht wird, schedule.json neu zu laden. Die Quelldatei
+// aendert sich hoechstens taeglich (siehe Workflow), haeufigeres Abfragen
+// braeuchte es nicht.
+#define SCHEDULE_FETCH_INTERVAL_MS (12UL * 60UL * 60UL * 1000UL) // 12 Stunden
+
 // --- Abend-Reminder ---
 // Ab dieser Uhrzeit (lokale Zeit) am Vorabend einer Abfuhr beginnt das Blinken.
 #define REMINDER_START_HOUR 18

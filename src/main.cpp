@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "time_sync.h"
+#include "waste_schedule.h"
 #include "display_ui.h"
 
 // Wie oft die Kacheln neu berechnet werden (Termine/"Tage bis"/Reminder).
@@ -17,6 +18,7 @@ void setup() {
 
     displayInit();
     timeSyncBegin();
+    scheduleBegin();
 
     // Sofortige erste Aktualisierung, damit die UI nicht bis zum ersten
     // Intervall-Tick leer bleibt.
@@ -27,6 +29,7 @@ void setup() {
 void loop() {
     displayLoop();
     timeSyncLoop();
+    scheduleLoop();
 
     unsigned long nowMs = millis();
     if (nowMs - lastScheduleUpdateMs >= kScheduleUpdateIntervalMs) {
