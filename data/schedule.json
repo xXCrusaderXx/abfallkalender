@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-16T11:21:50Z",
+  "generated_at": "2026-11-17T11:54:33Z",
   "source": "abfallplus.de (app_id=de.k4systems.abfalllkbz, Kommune=Arnsdorf)",
   "bins": {
     "restmuell": [
@@ -72,7 +72,6 @@
       "2027-11-10"
     ],
     "gelbe_tonne": [
-      "2026-11-16",
       "2026-12-01",
       "2026-12-15",
       "2026-12-30",
